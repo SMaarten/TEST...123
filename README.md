@@ -1,4 +1,4 @@
-# Gebuisd.be – Oefentoetsen
+# TEST...123 – Oefentoetsen
 
 Oefentoetsen per vak en hoofdstuk voor het secundair onderwijs. Iedereen kan zonder login toetsen maken. Wie inlogt (met een zelfgekozen gebruikersnaam en wachtwoord; later ook Google, Microsoft of Smartschool), ziet zijn historiek op elk toestel, kan lid worden van een klas en een hoofdstuk voorstellen. Leerkrachten zien de scores van hun klassen. De beheerder keurt voorstellen goed en zet ze online.
 

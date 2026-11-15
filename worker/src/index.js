@@ -1,4 +1,4 @@
-// Gebuisd.be API (Cloudflare Worker)
+// TEST...123 API (Cloudflare Worker)
 //
 // Bewaart de geheime sleutels (Claude, GitHub, logins) zodat ze nooit in de browser van een bezoeker komen.
 //  - iedereen:      toetsen maken (dat gebeurt volledig op de website, zonder deze server)

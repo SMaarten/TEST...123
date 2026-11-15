@@ -1,4 +1,4 @@
-// Aanroepen naar de Gebuisd.be API (Cloudflare Worker).
+// Aanroepen naar de TEST...123 API (Cloudflare Worker).
 // Twee soorten sessies: een leerling/leerkracht (login via Google, Microsoft of Smartschool)
 // en de beheerder (wachtwoord). Ze staan los van elkaar.
 import { API_URL } from "./config.js";

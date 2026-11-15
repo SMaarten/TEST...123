@@ -1,4 +1,4 @@
-# Gebuisd.be API (Cloudflare Worker)
+# TEST...123 API (Cloudflare Worker)
 
 Kleine server voor de website. Hij bewaart de Claude API-sleutel, het GitHub-token en de login-gegevens, regelt het inloggen van leerlingen (eigen gebruikersnaam en wachtwoord; later ook Google, Microsoft, Smartschool), bewaart hun resultaten en klassen, ontvangt voorstellen en doet voor de beheerder de aanroepen naar Claude en GitHub. Een gratis Cloudflare-account volstaat.
 

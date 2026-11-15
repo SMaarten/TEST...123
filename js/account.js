@@ -249,7 +249,7 @@ export async function renderClasses(root, id) {
   if (!u) return loginFirst(location.hash);
   if (u.rol !== "leerkracht") {
     root.innerHTML = `<header class="top"><span class="eyebrow">Klassen</span><h1>Enkel voor leerkrachten</h1></header>
-      <p class="panel msg">Ben je leerkracht? Vraag de beheerder van Gebuisd.be om je account de rol leerkracht te geven.</p>`;
+      <p class="panel msg">Ben je leerkracht? Vraag de beheerder van TEST...123 om je account de rol leerkracht te geven.</p>`;
     return;
   }
   if (id) return renderClass(root, id);
@@ -327,7 +327,7 @@ async function renderClass(root, id) {
 export function renderPrivacy(root) {
   root.innerHTML = `
     <header class="top">
-      <span class="eyebrow">Gebuisd.be</span>
+      <span class="eyebrow">TEST...123</span>
       <h1>Privacyverklaring</h1>
     </header>
     <section class="panel prose">
@@ -348,7 +348,7 @@ export function renderPrivacy(root) {
       <h3>Waar staan de gegevens?</h3>
       <p>Accounts, resultaten en voorstellen staan op servers van Cloudflare. De website zelf staat op GitHub Pages.</p>
       <h3>Je rechten</h3>
-      <p>Je kan op elk moment je account en al je gegevens zelf verwijderen via <a href="#/mijn">Mijn account</a>. Je kan ook een klas verlaten, waarna je leerkracht je scores niet meer ziet. Voor andere vragen over je gegevens kan je terecht bij de beheerder van Gebuisd.be. (info@cloudvision.be)</p>
+      <p>Je kan op elk moment je account en al je gegevens zelf verwijderen via <a href="#/mijn">Mijn account</a>. Je kan ook een klas verlaten, waarna je leerkracht je scores niet meer ziet. Voor andere vragen over je gegevens kan je terecht bij de beheerder van TEST...123. (info@cloudvision.be)</p>
       <p class="muted">Ben je jonger dan 13 jaar, vraag dan eerst toestemming aan je ouders voor je een account aanmaakt.</p>
     </section>`;
 }

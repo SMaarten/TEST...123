@@ -34,7 +34,7 @@ export async function renderAdmin(el) {
   root = el;
   if (!apiUrl()) {
     root.innerHTML = `<header class="top"><span class="eyebrow">Beheer</span><h1>Server nog niet ingesteld</h1></header>
-      <p class="panel msg">Vul in <code>js/config.js</code> het adres van de Gebuisd.be API in. Zie <code>worker/README.md</code>.</p>`;
+      <p class="panel msg">Vul in <code>js/config.js</code> het adres van de TEST...123 API in. Zie <code>worker/README.md</code>.</p>`;
     return;
   }
   if (!session()) return renderLogin();

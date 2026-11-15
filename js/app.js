@@ -81,7 +81,7 @@ async function route() {
   const [page, arg] = path.split("/");
   const params = new URLSearchParams(query || "");
   account.renderAccountBar();
-  const page2 = (title, crumb) => { show("viewAdmin"); crumbs([["Alle hoofdstukken", "#/"], [crumb]]); document.title = `${title} · Gebuisd.be`; return $("viewAdmin"); };
+  const page2 = (title, crumb) => { show("viewAdmin"); crumbs([["Alle hoofdstukken", "#/"], [crumb]]); document.title = `${title} · TEST...123`; return $("viewAdmin"); };
   try {
     if (page === "aangemeld") {
       await account.handleCallback(page2("Inloggen", "Inloggen"), params);
@@ -100,7 +100,7 @@ async function route() {
     } else if (page === "beheer") {
       show("viewAdmin");
       crumbs([["Alle hoofdstukken", "#/"], ["Beheer"]]);
-      document.title = "Beheer · Gebuisd.be";
+      document.title = "Beheer · TEST...123";
       const mod = await import("./beheer.js");
       await mod.renderAdmin($("viewAdmin"));
     } else if (page === "voorstel") {
@@ -110,7 +110,7 @@ async function route() {
     } else {
       show("viewHome");
       crumbs([]);
-      document.title = "Gebuisd.be Oefentoetsen";
+      document.title = "TEST...123 Oefentoetsen";
       await renderHome();
     }
   } catch (e) {
@@ -181,7 +181,7 @@ async function openTest(chapter) {
     } catch {}
   }
   migrateOldKeys();
-  document.title = `${ch.titel} · Gebuisd.be`;
+  document.title = `${ch.titel} · TEST...123`;
   crumbs([["Alle hoofdstukken", "#/"], [ch.vak], [ch.nr ? "Hoofdstuk " + ch.nr : ch.titel]]);
   $("tEyebrow").textContent = [ch.vak, ch.graad, ch.nr ? "Hoofdstuk " + ch.nr : ""].filter(Boolean).join(" · ");
   $("tTitle").textContent = ch.titel;
