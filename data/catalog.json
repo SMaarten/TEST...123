@@ -1,6 +1,15 @@
 {
   "hoofdstukken": [
     {
+      "id": "latijn-1-h",
+      "vak": "Latijn",
+      "graad": "1ste jaar",
+      "nr": "",
+      "titel": "Woordenlijst Caput 2",
+      "vragen": 120,
+      "bestand": "data/latijn-1-h.json"
+    },
+    {
       "id": "latijn-1-h2",
       "vak": "Latijn",
       "graad": "1ste jaar",
