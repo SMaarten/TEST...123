@@ -3,7 +3,7 @@
 //  - vragen nakijken en het hoofdstuk online zetten (de server commit naar GitHub)
 //  - bestaande hoofdstukken bewerken of verwijderen
 //  - instellingen: Claude-sleutel, GitHub-token, repo en branch (staan enkel op de server)
-import { lsGet, lsSet, lsDel, esc, chapterId, validateChapter, serializeChapter } from "./util.js";
+import { lsGet, lsSet, lsDel, esc, chapterId, validateChapter, serializeChapter, taakLoopt } from "./util.js";
 import { loadCatalog, clearCatalogCache, LS_LOCAL } from "./app.js";
 import { api, apiUrl, session, setSession, logout, ApiFout } from "./api.js";
 
@@ -16,6 +16,7 @@ const POLL_MS = 20000;
 const $ = id => root.querySelector("#" + id);
 const kb = n => n > 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " MB" : Math.max(1, Math.round(n / 1024)) + " kB";
 const datum = ts => new Date(ts).toLocaleDateString("nl-BE", { day: "numeric", month: "short", year: "numeric" });
+const loopt = v => taakLoopt(v.taak);   // opdracht bij Claude nog bezig
 const tijdstip = ts => new Date(ts).toLocaleString("nl-BE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function status(id, text, kind) {
@@ -105,7 +106,7 @@ async function renderProposals() {
             ${v.online ? `<span class="tag">online gezet</span>` : ""}</p>
           <span class="row">
             ${v.taak?.klaar ? `<button class="btn small primary" type="button" data-res="${esc(v.id)}">Resultaat nakijken</button>` : ""}
-            <button class="btn small${v.taak?.klaar ? "" : " primary"}" type="button" data-gen="${esc(v.id)}" ${v.taak && !v.taak.klaar ? "disabled" : ""}>${v.online || v.taak?.klaar ? "Opnieuw vragen maken" : "Vragen laten maken"}</button>
+            <button class="btn small${v.taak?.klaar ? "" : " primary"}" type="button" data-gen="${esc(v.id)}" ${loopt(v) ? "disabled" : ""}>${v.online || v.taak?.klaar ? "Opnieuw vragen maken" : "Vragen laten maken"}</button>
             <button class="btn small danger" type="button" data-delv="${esc(v.id)}">Verwijderen</button>
           </span>
         </div>
@@ -121,7 +122,8 @@ async function renderProposals() {
     if (d) deleteProposal(d, e.target);
   };
   for (const v of list) {
-    if (v.taak && !v.taak.klaar) showRunning(v);
+    if (loopt(v)) showRunning(v);
+    else if (v.taak?.fout) status("g-" + v.id, `Het maken van de vragen (gestart ${tijdstip(v.taak.gestart)}) is mislukt: ${esc(v.taak.fout)}`, "err");
     else if (v.taak?.klaar) status("g-" + v.id, `De vragen zijn klaar sinds ${tijdstip(v.taak.klaar)}. Klik op <b>Resultaat nakijken</b>.`, "ok");
   }
   schedulePoll(list);
@@ -136,7 +138,7 @@ function showRunning(v) {
 // Zolang er opdrachten lopen: om de 20 seconden vragen of ze klaar zijn.
 function schedulePoll(list) {
   clearTimeout(pollTimer);
-  const running = list.filter(v => v.taak && !v.taak.klaar);
+  const running = list.filter(loopt);
   if (!running.length) return;
   pollTimer = setTimeout(async () => {
     if (!$("proposals")) return;   // beheerpagina verlaten

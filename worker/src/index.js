@@ -12,12 +12,11 @@
 //              upload:<fileId>   geüpload maar nog niet aan een voorstel gekoppeld (na 1 dag opgeruimd)
 //              oauth:<state>     lopende login (10 minuten)
 //              sessiesleutel     geheime sleutel voor leerlingensessies
-//              rl:<...>          tellers tegen misbruik
-//          D1  gebruikers, resultaten, gezien, klassen, leden (zie schema.sql)
+//          D1  gebruikers, resultaten, gezien, klassen, leden, tellers tegen misbruik (zie schema.sql)
 import Anthropic, { toFile } from "@anthropic-ai/sdk";
 import { MODEL, SYSTEM, SCHEMA, taskText, GRADE_MODEL, GRADE_SYSTEM, GRADE_SCHEMA, gradeText } from "./prompt.js";
-import { validateChapter, serializeChapter, catalogEntry, sortCatalog } from "../../js/util.js";
-import { Fout, json, ip, rateLimit, getConfig, enc, mask, clean, newId, allowedOrigins, hmacKey, signToken, verifyToken, bearer } from "./common.js";
+import { validateChapter, serializeChapter, catalogEntry, sortCatalog, taakLoopt } from "../../js/util.js";
+import { Fout, json, ip, rateLimit, rateLimits, getConfig, enc, mask, clean, newId, allowedOrigins, hmacKey, signToken, verifyToken, bearer } from "./common.js";
 import * as auth from "./auth.js";
 import * as users from "./users.js";
 import * as lokaal from "./lokaal.js";
@@ -95,10 +94,12 @@ async function upload(req, env, u) {
 // Hoofdstukken uit de repo, kort bewaard in het geheugen van de Worker.
 const chapterCache = new Map();
 const CHAPTER_TTL = 10 * 60 * 1000;
+const REFRESH_MIN = 60 * 1000;   // "vers" ophalen hoogstens eens per minuut per hoofdstuk (spaart het GitHub-quotum)
 
-async function loadChapter(env, cfg, id) {
+async function loadChapter(env, cfg, id, vers = false) {
   const hit = chapterCache.get(id);
-  if (hit && Date.now() - hit.ts < CHAPTER_TTL) return hit.ch;
+  const age = hit ? Date.now() - hit.ts : Infinity;
+  if (hit && (vers ? age < REFRESH_MIN : age < CHAPTER_TTL)) return hit.ch;
   const f = await getFile(env, cfg, `data/${id}.json`);
   if (!f) return null;
   const ch = JSON.parse(f.text);
@@ -108,21 +109,27 @@ async function loadChapter(env, cfg, id) {
 
 async function grade(req, env) {
   // iedereen mag dit gebruiken (ook zonder login); een klas deelt vaak één IP-adres
-  await rateLimit(env, "verbeter", ip(req), 400, 3600);
-  await rateLimit(env, "verbeter-dag", "alle", 5000, 24 * 3600);
+  await rateLimits(env, [["verbeter", ip(req), 400, 3600], ["verbeter-dag", "alle", 5000, 24 * 3600]]);
   const b = await req.json().catch(() => ({}));
   const id = String(b.hoofdstuk || ""), idx = Number(b.index);
-  const antwoord = String(b.antwoord || "").trim().slice(0, 500);
+  // < en > vervangen door de gelijkaardige tekens ‹ en ›: zo kan een leerling de <antwoord>-afbakening niet sluiten,
+  // maar blijft een antwoord als "x > 3" leesbaar (de opdracht legt dat uit)
+  const antwoord = String(b.antwoord || "").replace(/</g, "‹").replace(/>/g, "›").trim().slice(0, 500);
   if (!/^[a-z0-9-]+$/.test(id) || !Number.isInteger(idx)) throw new Fout(400, "Ongeldige vraag.");
   if (!antwoord) throw new Fout(400, "Typ eerst een antwoord.");
 
   const cfg = await getConfig(env);
   if (!cfg.anthropicKey) throw new Fout(503, "Zelf antwoorden is nu niet beschikbaar. Kies meerkeuze.");
-  const ch = await loadChapter(env, cfg, id);
-  if (!ch) throw new Fout(404, "Zelf antwoorden kan pas als dit hoofdstuk online staat.");
   // de index kan verschoven zijn als het hoofdstuk ondertussen aangepast werd: zoek dan op vraagtekst
-  let q = ch.vragen[idx];
-  if (!q || (b.vraag && q.v !== b.vraag)) q = ch.vragen.find(x => x.v === b.vraag);
+  const find = c => { const x = c.vragen[idx]; return x && (!b.vraag || x.v === b.vraag) ? x : c.vragen.find(y => y.v === b.vraag); };
+  let ch = await loadChapter(env, cfg, id);
+  if (!ch) throw new Fout(404, "Zelf antwoorden kan pas als dit hoofdstuk online staat.");
+  let q = find(ch);
+  if (!q) {
+    // misschien is het hoofdstuk net opnieuw online gezet en is de bewaarde kopie verouderd
+    ch = await loadChapter(env, cfg, id, true);
+    q = ch && find(ch);
+  }
   if (!q) throw new Fout(409, "Deze vraag bestaat niet meer. Start een nieuwe toets.");
 
   // Haiku kent geen automatische overstap naar een ander model bij een weigering; die vangen we hieronder op
@@ -144,8 +151,7 @@ async function grade(req, env) {
 }
 
 async function propose(req, env, u) {
-  await rateLimit(env, "voorstel", u.id, 5, 3600);
-  await rateLimit(env, "voorstel-dag", "alle", 50, 24 * 3600);
+  await rateLimits(env, [["voorstel", u.id, 5, 3600], ["voorstel-dag", "alle", 50, 24 * 3600]]);
   const b = await req.json().catch(() => ({}));
   const v = {
     vak: clean(b.vak, 60), graad: clean(b.graad, 30), nr: clean(b.nr, 10), titel: clean(b.titel, 120),
@@ -220,7 +226,7 @@ async function deleteProposal(env, id) {
     const c = claude(env, cfg);
     await Promise.all(v.bestanden.map(f => c.files.delete(f.id).catch(() => {})));
   }
-  if (cfg.anthropicKey && v.taak?.batch && !v.taak.klaar) claude(env, cfg).messages.batches.cancel(v.taak.batch).catch(() => {});
+  if (cfg.anthropicKey && taakLoopt(v.taak)) claude(env, cfg).messages.batches.cancel(v.taak.batch).catch(() => {});
   await env.KV.delete(`resultaat:${id}`);
   await env.KV.delete(`voorstel:${id}`);
 }
@@ -228,7 +234,7 @@ async function deleteProposal(env, id) {
 // Vragen maken loopt als batch bij Claude: de server dient de opdracht in en kijkt later of ze klaar is.
 // Zo hoeft er geen verbinding open te blijven en blijft de rekentijd van de Worker heel klein
 // (het gratis Cloudflare-plan laat maar enkele milliseconden per aanvraag toe). Een batch kost ook de helft.
-// KV: voorstel:<id>.taak = { batch, gestart, klaar? }   resultaat:<id> = { tekst, stop_reason, usage }
+// KV: voorstel:<id>.taak = { batch, gestart, klaar? | fout? }   resultaat:<id> = { tekst, stop_reason, usage }
 async function generate(env, id) {
   const v = await getProposal(env, id);
   const cfg = await getConfig(env);
@@ -251,16 +257,26 @@ async function generate(env, id) {
     }]
   });
   // een vorige, nog lopende opdracht voor dit voorstel stoppen
-  if (v.taak?.batch && !v.taak.klaar) client.messages.batches.cancel(v.taak.batch).catch(() => {});
+  if (taakLoopt(v.taak)) client.messages.batches.cancel(v.taak.batch).catch(() => {});
   await env.KV.delete(`resultaat:${id}`);
   const taak = { batch: batch.id, gestart: Date.now() };
   await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...v, taak }));
   return { status: "bezig", gestart: taak.gestart };
 }
 
+// Taak bijwerken op basis van een verse lezing, en enkel als het nog dezelfde batch is: het ophalen bij Claude
+// duurt even, en intussen kan de beheerder (in een ander tabblad) al een nieuwe opdracht gestart hebben.
+async function updateTaak(env, id, batchId, patch) {
+  const cur = await env.KV.get(`voorstel:${id}`, "json");
+  if (!cur || cur.taak?.batch !== batchId) return false;
+  await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...cur, taak: { ...cur.taak, ...patch } }));
+  return true;
+}
+
 async function generateStatus(env, id) {
   const v = await getProposal(env, id);
   if (!v.taak) throw new Fout(404, "Voor dit voorstel worden geen vragen gemaakt.");
+  if (v.taak.fout) return { status: "fout", gestart: v.taak.gestart, melding: v.taak.fout };
   const saved = await env.KV.get(`resultaat:${id}`, "json");
   if (saved) return { status: "klaar", gestart: v.taak.gestart, klaar: v.taak.klaar, ...saved };
   const cfg = await getConfig(env);
@@ -274,7 +290,8 @@ async function generateStatus(env, id) {
       : result.type === "expired" ? "De opdracht duurde te lang en is vervallen. Probeer opnieuw."
       : result.type === "canceled" ? "De opdracht werd geannuleerd."
       : "Claude kon de vragen niet maken: " + (result.error?.error?.message || result.error?.type || "onbekende fout") + ".";
-    await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...v, taak: null }));
+    // de reden bewaren, zodat de beheerder ze ziet (ook als de pagina pas later opnieuw geopend wordt)
+    if (!(await updateTaak(env, id, v.taak.batch, { fout: melding }))) return { status: "bezig", gestart: v.taak.gestart };
     return { status: "fout", melding };
   }
   const msg = result.message;
@@ -283,8 +300,10 @@ async function generateStatus(env, id) {
     stop_reason: msg.stop_reason, usage: msg.usage, batch: true
   };
   const klaar = Date.now();
+  const cur = await env.KV.get(`voorstel:${id}`, "json");
+  if (cur?.taak?.batch !== v.taak.batch) return { status: "bezig", gestart: cur?.taak?.gestart };   // intussen opnieuw gestart
   await env.KV.put(`resultaat:${id}`, JSON.stringify(out));
-  await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...v, taak: { ...v.taak, klaar } }));
+  await updateTaak(env, id, v.taak.batch, { klaar });
   return { status: "klaar", gestart: v.taak.gestart, klaar, ...out };
 }
 
@@ -429,6 +448,7 @@ async function publish(req, env) {
   const label = `${clean.vak} ${clean.graad} H${clean.nr}`.replace(/\s+/g, " ").trim();
   await putFile(env, cfg, path, serializeChapter(clean), existing?.sha, `${existing ? "Bijwerken" : "Toevoegen"}: ${label} ${clean.titel} (${clean.vragen.length} vragen)`);
   await updateCatalog(env, cfg, list => [...list.filter(h => h.id !== clean.id), catalogEntry(clean)], `Catalogus: ${label} ${clean.titel}`);
+  chapterCache.delete(clean.id);
   // het voorstel en de cursus blijven bewaard (opnieuw vragen maken kan later), enkel gemarkeerd
   if (b.voorstel) {
     const v = await env.KV.get(`voorstel:${b.voorstel}`, "json");
@@ -441,6 +461,7 @@ async function removeChapter(env, id) {
   if (!/^[a-z0-9-]+$/.test(id)) throw new Fout(400, "Ongeldig hoofdstuk.");
   const cfg = await getConfig(env);
   await updateCatalog(env, cfg, list => list.filter(h => h.id !== id), `Catalogus: ${id} verwijderd`);
+  chapterCache.delete(id);
   const f = await getFile(env, cfg, `data/${id}.json`);
   if (f) await gh(env, cfg, `/contents/data/${id}.json`, { method: "DELETE", body: JSON.stringify({ message: `Verwijderen: ${id}`, sha: f.sha, branch: cfg.branch }) });
   return { ok: true };

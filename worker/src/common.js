@@ -7,13 +7,39 @@ export const json = (data, status = 200, headers = {}) =>
 
 export const ip = req => req.headers.get("CF-Connecting-IP") || "lokaal";
 
-export async function rateLimit(env, kind, who, max, windowSec) {
-  const slot = Math.floor(Date.now() / 1000 / windowSec);
-  const k = `rl:${kind}:${who}:${slot}`;
-  const n = Number(await env.KV.get(k)) || 0;
-  if (n >= max) throw new Fout(429, "Te veel pogingen. Probeer het later opnieuw.");
-  await env.KV.put(k, String(n + 1), { expirationTtl: Math.max(60, windowSec * 2) });
+// Tellers tegen misbruik staan in D1, niet in KV: KV laat op het gratis plan maar 1000 schrijfacties
+// per dag toe (en 1 per seconde per sleutel), wat een klas die samen antwoorden laat verbeteren meteen opgebruikt.
+// Eén atomaire upsert per teller, alle tellers van een aanvraag in één D1-batch; de tabel wordt zo nodig
+// zelf aangemaakt (staat ook in schema.sql).
+const TELLERS_SQL = [
+  "CREATE TABLE IF NOT EXISTS tellers (sleutel TEXT PRIMARY KEY, aantal INTEGER NOT NULL, verloopt INTEGER NOT NULL)",
+  "CREATE INDEX IF NOT EXISTS tellers_verloopt ON tellers (verloopt)"
+];
+let tellersKlaar = false;
+
+// limits: [[soort, wie, max, venster in seconden], ...]
+export async function rateLimits(env, limits) {
+  const now = Math.floor(Date.now() / 1000);
+  const stmts = () => limits.map(([kind, who, , windowSec]) => {
+    const slot = Math.floor(now / windowSec);
+    return env.DB.prepare(
+      "INSERT INTO tellers (sleutel, aantal, verloopt) VALUES (?1, 1, ?2) ON CONFLICT(sleutel) DO UPDATE SET aantal = aantal + 1 RETURNING aantal"
+    ).bind(`${kind}:${who}:${slot}`, (slot + 1) * windowSec);
+  });
+  let res;
+  try { res = await env.DB.batch(stmts()); }
+  catch (e) {
+    if (tellersKlaar || !/no such table/i.test(String(e?.message))) throw e;
+    await env.DB.batch(TELLERS_SQL.map(q => env.DB.prepare(q)));
+    res = await env.DB.batch(stmts());
+  }
+  tellersKlaar = true;
+  // af en toe verlopen tellers opruimen, zonder dat de aanvraag erop wacht
+  if (Math.random() < 0.01) env.DB.prepare("DELETE FROM tellers WHERE verloopt < ?1").bind(now).run().catch(() => {});
+  res.forEach((r, i) => { if (r.results[0].aantal > limits[i][2]) throw new Fout(429, "Te veel pogingen. Probeer het later opnieuw."); });
 }
+
+export const rateLimit = (env, kind, who, max, windowSec) => rateLimits(env, [[kind, who, max, windowSec]]);
 
 export async function getConfig(env) {
   const c = (await env.KV.get("config", "json")) || {};

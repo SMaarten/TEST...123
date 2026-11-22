@@ -1,5 +1,5 @@
 import { lsGet, lsSet, lsDel, esc, shuffle, fmt, sortCatalog, catalogEntry, needsChoices } from "./util.js";
-import { api, apiUrl } from "./api.js";
+import { api, serverStatus } from "./api.js";
 import * as account from "./account.js";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
@@ -76,7 +76,10 @@ function crumbs(items) {
 }
 
 async function route() {
+  clearTimeout(draftTimer);
   saveRun();
+  // de vorige toets is bewaard; zo kan niets ze nog onder een ander hoofdstuk wegschrijven
+  state = null;
   clearInterval(tick);
   const h = location.hash.replace(/^#\/?/, "");
   const [path, query] = h.split("?");
@@ -159,7 +162,8 @@ let ch = null;      // huidig hoofdstuk
 let state = null;   // huidige toets
 let tick = null;
 let pendingConfirm = false;
-const checking = new Set();   // open vragen die nu verbeterd worden
+let draftTimer = null;
+let checking = new Set();   // open vragen die nu verbeterd worden (nieuwe Set per toets)
 
 const key = k => `gebuisd.${ch.id}.${k}`;
 
@@ -193,13 +197,14 @@ async function openTest(chapter) {
 
   const saved = lsGet(key("run"), null);
   if (saved && !saved.submitted && saved.ids.every(i => ch.vragen[i])) {
-    state = { mode: "mc", done: [], open: [], drafts: [], ...saved };
+    state = { mode: "mc", open: [], drafts: [], ...saved };
+    delete state.done;   // van een eerdere versie
     showBar(true);
     state.start = Date.now() - (saved.elapsedAtSave || 0) * 1000;
     render();
     startTimer();
   } else {
-    showChooser();
+    await showChooser();
   }
 }
 
@@ -209,12 +214,17 @@ function showBar(on) {
 }
 
 // Bij elke nieuwe toets: kiezen tussen meerkeuze en zelf antwoorden.
-function showChooser() {
-  if (!apiUrl()) return newTest("mc");   // zonder server kan er niets verbeterd worden
+async function showChooser() {
+  const c = ch;
   clearInterval(tick);
+  clearTimeout(draftTimer);
   if (ch) lsDel(key("run"));
   state = null;
-  checking.clear();
+  checking = new Set();
+  // zonder server (of zonder sleutel om te verbeteren) kan er niets verbeterd worden: meteen meerkeuze
+  const s = await serverStatus();
+  if (ch !== c || state) return;   // intussen naar een ander hoofdstuk of al een toets gestart
+  if (!s.verbeteren) return newTest("mc");
   showBar(false);
   $("result").hidden = true;
   $("timer").textContent = "0:00";
@@ -276,11 +286,10 @@ function pickQuestions() {
 function newTest(mode = "mc") {
   const ids = pickQuestions();
   lsSet(LS_MODE, mode);
-  checking.clear();
+  checking = new Set();
   showBar(true);
   state = {
     mode,
-    done: ids.map(() => false),    // zelf antwoorden: vraag al verbeterd
     open: ids.map(() => null),     // zelf antwoorden: { t: antwoord, ok, fb: feedback }
     drafts: ids.map(() => ""),
     ids,
@@ -345,7 +354,8 @@ function render() {
 }
 
 const isOpen = qi => state.mode === "open" && !needsChoices(ch.vragen[state.ids[qi]]);
-const isDone = qi => state.submitted || (state.mode === "open" && state.done[qi]);
+// meerkeuze: verbetering na het indienen; zelf antwoorden: meteen, zodra de vraag een antwoord heeft
+const isDone = qi => state.submitted || (state.mode === "open" && state.answers[qi] !== null);
 
 function qHtml(qi) {
   const q = ch.vragen[state.ids[qi]];
@@ -394,7 +404,7 @@ function rerenderQ(qi) {
 }
 
 async function checkOpen(qi) {
-  if (!state || state.submitted || state.done[qi] || checking.has(qi)) return;
+  if (!state || isDone(qi) || checking.has(qi)) return;
   const ta = $("test").querySelector(`textarea[data-q="${qi}"]`);
   const antwoord = (ta ? ta.value : state.drafts[qi] || "").trim();
   const err = $("qerr" + qi);
@@ -402,15 +412,15 @@ async function checkOpen(qi) {
   const run = state;
   const id = state.ids[qi];
   state.drafts[qi] = antwoord;
-  checking.add(qi);
+  const busy = checking;   // een antwoord dat terugkomt na een nieuwe toets, raakt die niet
+  busy.add(qi);
   rerenderQ(qi);
   try {
     const r = await api("/verbeter", { method: "POST", body: { hoofdstuk: ch.id, index: id, vraag: ch.vragen[id].v, antwoord } });
-    checking.delete(qi);
+    busy.delete(qi);
     if (state !== run || state.submitted) return;
     state.open[qi] = { t: antwoord, ok: !!r.juist, fb: r.feedback || "" };
     state.answers[qi] = r.juist ? 0 : -1;
-    state.done[qi] = true;
     saveRun();
     rerenderQ(qi);
     updateProgress();
@@ -418,7 +428,7 @@ async function checkOpen(qi) {
     const next = $("test").querySelector(".answer textarea:not(:disabled)");
     if (next) next.focus({ preventScroll: false });
   } catch (e) {
-    checking.delete(qi);
+    busy.delete(qi);
     if (state !== run) return;
     rerenderQ(qi);
     const el = $("qerr" + qi);
@@ -564,7 +574,6 @@ $("test").addEventListener("click", e => {
   state.answers[qi] = oi;
   if (state.mode === "open") {
     // zelf antwoorden: ook keuzevragen meteen verbeteren
-    state.done[qi] = true;
     saveRun();
     rerenderQ(qi);
     updateProgress();
@@ -585,7 +594,9 @@ $("test").addEventListener("input", e => {
   state.drafts[Number(ta.dataset.q)] = ta.value;
   const err = $("qerr" + ta.dataset.q);
   if (err) err.hidden = true;
-  saveRun();
+  // opslaan na een korte pauze (bij het sluiten van de pagina gebeurt het sowieso)
+  clearTimeout(draftTimer);
+  draftTimer = setTimeout(saveRun, 600);
 });
 $("test").addEventListener("keydown", e => {
   // Enter = verbeteren, Shift+Enter = nieuwe regel

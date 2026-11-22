@@ -20,7 +20,7 @@ Zet het KV-id in `wrangler.toml` op de plaats van `VERVANG_DOOR_KV_ID` en het da
 npx wrangler d1 execute gebuisd --remote --file schema.sql
 ```
 
-Heb je de tabellen al eerder aangemaakt, voer `schema.sql` dan opnieuw uit na een update: bestaande tabellen blijven ongemoeid, nieuwe (zoals `wachtwoorden`) worden toegevoegd.
+Heb je de tabellen al eerder aangemaakt, voer `schema.sql` dan opnieuw uit na een update: bestaande tabellen blijven ongemoeid, nieuwe (zoals `wachtwoorden`) worden toegevoegd. De tabel `tellers` maakt de server zo nodig ook zelf aan.
 
 Kies dan een lang, sterk admin-wachtwoord en zet de server online:
 
@@ -55,14 +55,14 @@ Iedereen die inlogt, is eerst *leerling*. Leerkrachten geef je de rol *leerkrach
 | Waar | Wat |
 |---|---|
 | Worker-geheugen | hoofdstukken uit de repo, 10 minuten bewaard om antwoorden te verbeteren |
-| Cloudflare KV | instellingen (sleutels, repo, branch, logins), voorstellen (met de lopende batch-opdracht), de gemaakte vragenbank per voorstel (`resultaat:<id>`), lopende logins, tellers tegen misbruik |
-| Cloudflare D1 | gebruikers, wachtwoord-hashes, resultaten, al gekregen vragen, klassen en leden (`schema.sql`) |
+| Cloudflare KV | instellingen (sleutels, repo, branch, logins), voorstellen (met de lopende batch-opdracht), de gemaakte vragenbank per voorstel (`resultaat:<id>`), lopende logins |
+| Cloudflare D1 | gebruikers, wachtwoord-hashes, resultaten, al gekregen vragen, klassen en leden, tellers tegen misbruik (`schema.sql`) |
 | Claude Files API | de ingestuurde cursusbestanden, zonder vervaldatum; verwijderd als de beheerder het voorstel verwijdert |
 | GitHub-repo | de online gezette hoofdstukken (`data/`) |
 
 ## Kosten
 
-- Cloudflare Workers, KV en D1: het gratis plan volstaat voor normaal gebruik.
+- Cloudflare Workers, KV en D1: het gratis plan volstaat voor normaal gebruik. De tellers tegen misbruik staan in D1 en niet in KV, omdat KV op het gratis plan maar 1000 schrijfacties per dag toelaat (en 1 per seconde per sleutel): een klas die samen antwoorden laat verbeteren, zou dat meteen opgebruiken.
 - Google-, Microsoft- en Smartschool-logins zijn gratis.
 - Claude, betaald via de API-sleutel:
   - *Vragen laten maken*: via de Batch API, aan de helft van de gewone prijs (Opus 5.5).
