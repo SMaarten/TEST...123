@@ -19,6 +19,15 @@
       "bestand": "data/latijn-1-h2.json"
     },
     {
+      "id": "mens-en-samenleving-1-h2",
+      "vak": "Mens en samenleving",
+      "graad": "1ste jaar",
+      "nr": "2",
+      "titel": "Verkocht",
+      "vragen": 110,
+      "bestand": "data/mens-en-samenleving-1-h2.json"
+    },
+    {
       "id": "wiskunde-1-h3",
       "vak": "Wiskunde",
       "graad": "1ste jaar",
