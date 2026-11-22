@@ -1,9 +1,11 @@
-import { lsGet, lsSet, lsDel, esc, shuffle, fmt, sortCatalog, catalogEntry } from "./util.js";
+import { lsGet, lsSet, lsDel, esc, shuffle, fmt, sortCatalog, catalogEntry, needsChoices } from "./util.js";
+import { api, apiUrl } from "./api.js";
 import * as account from "./account.js";
 
 const LETTERS = ["A", "B", "C", "D", "E", "F"];
 export const VRAGEN_PER_TOETS = 20;
 const LS_LIMIT = "gebuisd.limit";
+const LS_MODE = "gebuisd.modus";   // laatst gekozen manier: mc (meerkeuze) of open (zelf antwoorden)
 // Hoofdstukken die op dit toestel klaarstaan: net online gezet (GitHub Pages bouwt nog) of enkel lokaal uitgeprobeerd.
 export const LS_LOCAL = "gebuisd.local";
 
@@ -157,6 +159,7 @@ let ch = null;      // huidig hoofdstuk
 let state = null;   // huidige toets
 let tick = null;
 let pendingConfirm = false;
+const checking = new Set();   // open vragen die nu verbeterd worden
 
 const key = k => `gebuisd.${ch.id}.${k}`;
 
@@ -185,18 +188,47 @@ async function openTest(chapter) {
   crumbs([["Alle hoofdstukken", "#/"], [ch.vak], [ch.nr ? "Hoofdstuk " + ch.nr : ch.titel]]);
   $("tEyebrow").textContent = [ch.vak, ch.graad, ch.nr ? "Hoofdstuk " + ch.nr : ""].filter(Boolean).join(" · ");
   $("tTitle").textContent = ch.titel;
-  $("tSub").textContent = `${Math.min(VRAGEN_PER_TOETS, ch.vragen.length)} meerkeuzevragen uit alle onderdelen. ${ch.beschrijving || ""}`.trim();
+  $("tSub").textContent = `${Math.min(VRAGEN_PER_TOETS, ch.vragen.length)} vragen uit alle onderdelen. ${ch.beschrijving || ""}`.trim();
   $("limit").value = lsGet(LS_LIMIT, "0");
 
   const saved = lsGet(key("run"), null);
   if (saved && !saved.submitted && saved.ids.every(i => ch.vragen[i])) {
-    state = saved;
+    state = { mode: "mc", done: [], open: [], drafts: [], ...saved };
+    showBar(true);
     state.start = Date.now() - (saved.elapsedAtSave || 0) * 1000;
     render();
     startTimer();
   } else {
-    newTest();
+    showChooser();
   }
+}
+
+function showBar(on) {
+  $("bar").hidden = !on;
+  document.body.classList.toggle("has-bar", on);
+}
+
+// Bij elke nieuwe toets: kiezen tussen meerkeuze en zelf antwoorden.
+function showChooser() {
+  if (!apiUrl()) return newTest("mc");   // zonder server kan er niets verbeterd worden
+  clearInterval(tick);
+  if (ch) lsDel(key("run"));
+  state = null;
+  checking.clear();
+  showBar(false);
+  $("result").hidden = true;
+  $("timer").textContent = "0:00";
+  $("timer").classList.remove("warn");
+  const last = lsGet(LS_MODE, "mc");
+  $("test").innerHTML = `<div class="panel chooser">
+    <h2>Hoe wil je deze toets maken?</h2>
+    <div class="modes">
+      <button type="button" class="mode${last === "mc" ? " last" : ""}" data-mode="mc"><b>Meerkeuze</b><span>Kies telkens uit enkele antwoorden. Na het indienen zie je wat juist was.</span></button>
+      <button type="button" class="mode${last === "open" ? " last" : ""}" data-mode="open"><b>Zelf antwoorden</b><span>Typ bij elke vraag zelf je antwoord en krijg meteen verbetering. Een paar vragen hebben toch keuzes.</span></button>
+    </div>
+  </div>`;
+  renderHistory();
+  $("test").querySelector(".mode.last")?.focus({ preventScroll: true });
 }
 
 // Verdeel de 20 vragen over de onderdelen, in verhouding tot hun aantal vragen in de bank
@@ -241,9 +273,16 @@ function pickQuestions() {
   return picked;
 }
 
-function newTest() {
+function newTest(mode = "mc") {
   const ids = pickQuestions();
+  lsSet(LS_MODE, mode);
+  checking.clear();
+  showBar(true);
   state = {
+    mode,
+    done: ids.map(() => false),    // zelf antwoorden: vraag al verbeterd
+    open: ids.map(() => null),     // zelf antwoorden: { t: antwoord, ok, fb: feedback }
+    drafts: ids.map(() => ""),
     ids,
     orders: ids.map(i => shuffle(ch.vragen[i].a.map((_, k) => k))),
     answers: ids.map(() => null),
@@ -296,32 +335,95 @@ function render() {
       html += `<section class="sec"><h2><span class="secnr">${esc(secLabel(q.o))}</span>${esc(ch.onderdelen[q.o].titel)}</h2>`;
       lastSec = q.o;
     }
-    const n = qi + 1;
-    const chosen = state.answers[qi];
-    let cls = "q";
-    if (state.submitted) cls += chosen === 0 ? " right" : " wrong";
-    html += `<div class="${cls}" id="q${qi}"><div class="qhead"><span class="qnr">${n}</span><p class="qtext">${esc(q.v)}</p></div><div class="opts" role="radiogroup" aria-label="Vraag ${n}">`;
-    state.orders[qi].forEach((oi, pos) => {
-      let oc = "opt";
-      if (chosen === oi) oc += " sel";
-      if (state.submitted) {
-        if (oi === 0) oc += " is-correct";
-        else if (chosen === oi) oc += " is-wrong";
-      }
-      html += `<button type="button" class="${oc}" role="radio" aria-checked="${chosen === oi}" data-q="${qi}" data-o="${oi}" ${state.submitted ? "disabled" : ""}><span class="letter">${LETTERS[pos]}</span><span class="val">${esc(q.a[oi])}</span></button>`;
-    });
-    html += "</div>";
-    if (state.submitted) {
-      const lead = chosen === null ? "Niet beantwoord." : chosen === 0 ? "Juist!" : "Fout.";
-      html += `<p class="expl"><b>${lead}</b>${esc(q.u)}</p>`;
-    }
-    html += "</div>";
+    html += qHtml(qi);
   });
   if (lastSec >= 0) html += "</section>";
   $("test").innerHTML = html;
   renderResult();
   updateProgress();
   renderHistory();
+}
+
+const isOpen = qi => state.mode === "open" && !needsChoices(ch.vragen[state.ids[qi]]);
+const isDone = qi => state.submitted || (state.mode === "open" && state.done[qi]);
+
+function qHtml(qi) {
+  const q = ch.vragen[state.ids[qi]];
+  const n = qi + 1;
+  const chosen = state.answers[qi];
+  const done = isDone(qi);
+  let cls = "q";
+  if (done) cls += chosen === 0 ? " right" : " wrong";
+  let html = `<div class="${cls}" id="q${qi}"><div class="qhead"><span class="qnr">${n}</span><p class="qtext">${esc(q.v)}</p></div>`;
+  if (isOpen(qi)) {
+    const o = state.open[qi];
+    if (!done) {
+      const busy = checking.has(qi);
+      html += `<div class="answer"><textarea rows="2" maxlength="500" data-q="${qi}" aria-label="Jouw antwoord op vraag ${n}" placeholder="Typ je antwoord…" ${busy ? "disabled" : ""}>${esc(state.drafts[qi] || "")}</textarea>
+        <button type="button" class="btn primary" data-check="${qi}" ${busy ? "disabled" : ""}>${busy ? `<span class="spin"></span>Verbeteren…` : "Verbeter"}</button></div>
+        <p class="qerr" id="qerr${qi}" role="alert" hidden></p>`;
+    } else if (o) {
+      html += `<p class="given"><span class="muted">Jouw antwoord:</span> ${esc(o.t)}</p>`;
+    }
+  } else {
+    html += `<div class="opts" role="radiogroup" aria-label="Vraag ${n}">`;
+    state.orders[qi].forEach((oi, pos) => {
+      let oc = "opt";
+      if (chosen === oi) oc += " sel";
+      if (done) {
+        if (oi === 0) oc += " is-correct";
+        else if (chosen === oi) oc += " is-wrong";
+      }
+      html += `<button type="button" class="${oc}" role="radio" aria-checked="${chosen === oi}" data-q="${qi}" data-o="${oi}" ${done ? "disabled" : ""}><span class="letter">${LETTERS[pos]}</span><span class="val">${esc(q.a[oi])}</span></button>`;
+    });
+    html += "</div>";
+  }
+  if (done) {
+    const lead = chosen === null ? "Niet beantwoord." : chosen === 0 ? "Juist!" : "Fout.";
+    const o = isOpen(qi) ? state.open[qi] : null;
+    let body = esc(o?.fb || "");
+    if (isOpen(qi) && chosen !== 0) body += `${body ? " " : ""}Juist antwoord: <strong>${esc(q.a[0])}</strong>.`;
+    html += `<p class="expl"><b>${lead}</b>${body}${body && q.u ? "<br>" : ""}${esc(q.u)}</p>`;
+  }
+  return html + "</div>";
+}
+
+function rerenderQ(qi) {
+  const el = $("q" + qi);
+  if (el) el.outerHTML = qHtml(qi);
+}
+
+async function checkOpen(qi) {
+  if (!state || state.submitted || state.done[qi] || checking.has(qi)) return;
+  const ta = $("test").querySelector(`textarea[data-q="${qi}"]`);
+  const antwoord = (ta ? ta.value : state.drafts[qi] || "").trim();
+  const err = $("qerr" + qi);
+  if (!antwoord) { if (err) { err.textContent = "Typ eerst een antwoord."; err.hidden = false; } ta?.focus(); return; }
+  const run = state;
+  const id = state.ids[qi];
+  state.drafts[qi] = antwoord;
+  checking.add(qi);
+  rerenderQ(qi);
+  try {
+    const r = await api("/verbeter", { method: "POST", body: { hoofdstuk: ch.id, index: id, vraag: ch.vragen[id].v, antwoord } });
+    checking.delete(qi);
+    if (state !== run || state.submitted) return;
+    state.open[qi] = { t: antwoord, ok: !!r.juist, fb: r.feedback || "" };
+    state.answers[qi] = r.juist ? 0 : -1;
+    state.done[qi] = true;
+    saveRun();
+    rerenderQ(qi);
+    updateProgress();
+    // door naar de volgende vraag die nog open staat
+    const next = $("test").querySelector(".answer textarea:not(:disabled)");
+    if (next) next.focus({ preventScroll: false });
+  } catch (e) {
+    checking.delete(qi);
+    if (state !== run) return;
+    rerenderQ(qi);
+    const el = $("qerr" + qi);
+    if (el) { el.textContent = e.message || "Verbeteren lukt nu even niet. Probeer opnieuw."; el.hidden = false; }
+  }
 }
 
 function score() { return state.answers.filter(a => a === 0).length; }
@@ -355,7 +457,7 @@ function renderResult() {
     if (tot) secs += `<div><b>${ok}/${tot}</b>${esc(secLabel(sec))} ${esc(o.titel)}</div>`;
   });
   box.innerHTML = `<div class="big">${s}<small>/${n}</small></div>
-    <div><p><strong>${verdict(s, n)}</strong></p><p class="sub">Tijd: ${fmt(state.elapsed)}${state.timedOut ? " · de tijd was om" : ""}. De juiste antwoorden staan in het groen, met uitleg.</p></div>
+    <div><p><strong>${verdict(s, n)}</strong></p><p class="sub">Tijd: ${fmt(state.elapsed)}${state.timedOut ? " · de tijd was om" : ""}. ${state.mode === "open" ? "Bij elke vraag staat het juiste antwoord, met uitleg." : "De juiste antwoorden staan in het groen, met uitleg."}</p></div>
     <div class="bysec">${secs}</div>`;
   box.hidden = false;
 }
@@ -380,7 +482,7 @@ function submit(force) {
     state.ids.forEach((id, qi) => { if (ch.vragen[id].o === sec) { tot++; if (state.answers[qi] === 0) ok++; } });
     return [o.nr || String(sec + 1), ok, tot];
   }).filter(o => o[2]);
-  const entry = { d: Date.now(), s: score(), n: state.ids.length, t: Math.round(state.elapsed), o: onderdelen };
+  const entry = { d: Date.now(), s: score(), n: state.ids.length, t: Math.round(state.elapsed), o: onderdelen, m: state.mode };
   const hist = lsGet(key("hist"), []);
   hist.unshift(entry);
   lsSet(key("hist"), hist.slice(0, 30));
@@ -452,10 +554,22 @@ function histRow(ts, s, n, t) {
 /* ---------- Events ---------- */
 
 $("test").addEventListener("click", e => {
+  const m = e.target.closest(".mode");
+  if (m) { newTest(m.dataset.mode); return; }
+  const c = e.target.closest("[data-check]");
+  if (c) { checkOpen(Number(c.dataset.check)); return; }
   const b = e.target.closest(".opt");
-  if (!b || state.submitted) return;
+  if (!b || !state || isDone(Number(b.dataset.q))) return;
   const qi = Number(b.dataset.q), oi = Number(b.dataset.o);
   state.answers[qi] = oi;
+  if (state.mode === "open") {
+    // zelf antwoorden: ook keuzevragen meteen verbeteren
+    state.done[qi] = true;
+    saveRun();
+    rerenderQ(qi);
+    updateProgress();
+    return;
+  }
   b.parentElement.querySelectorAll(".opt").forEach(x => {
     const on = Number(x.dataset.o) === oi;
     x.classList.toggle("sel", on);
@@ -465,11 +579,26 @@ $("test").addEventListener("click", e => {
   updateProgress();
 });
 
-$("submitBtn").addEventListener("click", () => { if (state.submitted) newTest(); else submit(false); });
-$("newBtn").addEventListener("click", newTest);
+$("test").addEventListener("input", e => {
+  const ta = e.target.closest("textarea[data-q]");
+  if (!ta || !state) return;
+  state.drafts[Number(ta.dataset.q)] = ta.value;
+  const err = $("qerr" + ta.dataset.q);
+  if (err) err.hidden = true;
+  saveRun();
+});
+$("test").addEventListener("keydown", e => {
+  // Enter = verbeteren, Shift+Enter = nieuwe regel
+  const ta = e.target.closest("textarea[data-q]");
+  if (!ta || e.key !== "Enter" || e.shiftKey || e.isComposing) return;
+  e.preventDefault();
+  checkOpen(Number(ta.dataset.q));
+});
+$("submitBtn").addEventListener("click", () => { if (!state) return; if (state.submitted) showChooser(); else submit(false); });
+$("newBtn").addEventListener("click", showChooser);
 $("limit").addEventListener("change", e => {
   lsSet(LS_LIMIT, e.target.value);
-  if (!state.submitted) { state.limit = Number(e.target.value) || 0; saveRun(); updateTimer(); }
+  if (state && !state.submitted) { state.limit = Number(e.target.value) || 0; saveRun(); updateTimer(); }
 });
 $("hist").addEventListener("click", e => {
   if (e.target.id !== "clearHist") return;

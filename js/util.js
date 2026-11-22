@@ -52,8 +52,20 @@ export function catalogEntry(c) {
 export function serializeChapter(c) {
   const { vragen, ...rest } = c;
   const head = JSON.stringify(rest, null, 2).replace(/\n}$/, "");
-  return head + ',\n  "vragen": [\n' + vragen.map(v => "    " + JSON.stringify({ o: v.o, v: v.v, a: v.a, u: v.u || "" })).join(",\n") + "\n  ]\n}\n";
+  return head + ',\n  "vragen": [\n' + vragen.map(v => "    " + JSON.stringify({ o: v.o, v: v.v, a: v.a, u: v.u || "", ...(v.k ? { k: 1 } : {}) })).join(",\n") + "\n  ]\n}\n";
 }
+
+// Vragen die enkel met de keuzes erbij te beantwoorden zijn (bv. "Welke bewering is juist?").
+// Nieuwe hoofdstukken hebben daarvoor het veld k; voor oudere raden we het uit de vraagtekst.
+const KEUZE_RE = [
+  /\b(welke|wat)\b[^?]*\b(bewering|uitspraak|stelling|zin|zinnen|antwoord|reeks|vorm|vormen|volgorde|schrijfwijze|notatie|uitdrukking|woordenlijstvorm)\b[^?]*\b(juist|waar|fout|correct|onjuist|niet)\b/i,
+  /^welke? (zin|zinnen|uitspraak|bewering|stelling|rangschikking|getal|breuk|vorm|reeks|naamwoordgroep|woordgroep)\b/i,
+  /^welke?\b[^?]*\b(klopt|past|hoort)\b/i,
+  /^welke?\b[^?]*\bis (geen|zeker|niet)\b/i,
+  /\b(kleinst|grootst|verst|dichtst)\b/i,
+  /\bvan de volgende\b|\bwelke van (deze|de)\b|\b(waar of onwaar|juist of fout)\b/i
+];
+export function needsChoices(q) { return !!q.k || q.a.length <= 2 || KEUZE_RE.some(r => r.test(q.v)); }
 
 export function sortCatalog(list) {
   const num = s => parseFloat(String(s).replace(",", ".")) || 0;
