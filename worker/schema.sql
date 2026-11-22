@@ -56,3 +56,11 @@ CREATE TABLE IF NOT EXISTS wachtwoorden (
   hash        TEXT NOT NULL,
   gewijzigd   INTEGER NOT NULL
 );
+
+-- tellers tegen misbruik (aantal aanvragen per IP of gebruiker per tijdvak); de server maakt deze tabel zo nodig ook zelf aan
+CREATE TABLE IF NOT EXISTS tellers (
+  sleutel     TEXT PRIMARY KEY,           -- soort:wie:tijdvak
+  aantal      INTEGER NOT NULL,
+  verloopt    INTEGER NOT NULL            -- unix-tijd (s) waarna de teller weg mag
+);
+CREATE INDEX IF NOT EXISTS tellers_verloopt ON tellers (verloopt);

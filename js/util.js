@@ -62,10 +62,13 @@ const KEUZE_RE = [
   /^welke? (zin|zinnen|uitspraak|bewering|stelling|rangschikking|getal|breuk|vorm|reeks|naamwoordgroep|woordgroep)\b/i,
   /^welke?\b[^?]*\b(klopt|past|hoort)\b/i,
   /^welke?\b[^?]*\bis (geen|zeker|niet)\b/i,
-  /\b(kleinst|grootst|verst|dichtst)\b/i,
+  /^welke?\b[^?]*\b(kleinst|grootst|verst|dichtst)(e|en)?\b(?!\s+gemene)/i,   // "Welk getal is het kleinste?", niet "grootste gemene deler"
   /\bvan de volgende\b|\bwelke van (deze|de)\b|\b(waar of onwaar|juist of fout)\b/i
 ];
 export function needsChoices(q) { return !!q.k || q.a.length <= 2 || KEUZE_RE.some(r => r.test(q.v)); }
+
+// Loopt de batch-opdracht voor een voorstel nog bij Claude? (gedeeld door site en server)
+export const taakLoopt = t => !!(t && t.batch && !t.klaar && !t.fout);
 
 export function sortCatalog(list) {
   const num = s => parseFloat(String(s).replace(",", ".")) || 0;
