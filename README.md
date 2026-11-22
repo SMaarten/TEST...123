@@ -6,7 +6,11 @@ Oefentoetsen per vak en hoofdstuk voor het secundair onderwijs. Iedereen kan zon
 
 **Toetsen maken (iedereen, zonder login)**
 - Op de startpagina staan alle hoofdstukken, gegroepeerd per vak.
-- Elke toets heeft **20 meerkeuzevragen**, verdeeld over de onderdelen van het hoofdstuk in verhouding tot het aantal vragen per onderdeel in de vragenbank (elk onderdeel minstens één vraag). Vragen die je al kreeg, komen pas terug als een onderdeel op is.
+- Bij elke nieuwe toets kiest de leerling hoe hij de toets maakt:
+  - **Meerkeuze**: telkens kiezen uit enkele antwoorden; de verbetering komt na het indienen.
+  - **Zelf antwoorden**: bij elke vraag zelf het antwoord typen (in het Nederlands) en op **Verbeter** klikken (of Enter). Het antwoord wordt meteen verbeterd: juist of fout, een korte feedback, het juiste antwoord en de uitleg. Vragen die alleen met keuzes zinvol zijn (bv. "Welke bewering is juist?"), tonen ook in deze modus hun keuzes en worden meteen verbeterd. Niet verbeterde vragen tellen bij het indienen als niet beantwoord. Deze modus heeft de server nodig; zonder server start meteen meerkeuze.
+  - De laatste keuze wordt onthouden en voorgeselecteerd.
+- Elke toets heeft **20 vragen**, verdeeld over de onderdelen van het hoofdstuk in verhouding tot het aantal vragen per onderdeel in de vragenbank (elk onderdeel minstens één vraag). Vragen die je al kreeg, komen pas terug als een onderdeel op is.
 - Na het indienen: score, verbetering met uitleg en score per onderdeel. Optionele tijdslimiet.
 - Zonder login worden scores, de al gekregen vragen en een lopende toets enkel in de browser bewaard.
 
@@ -27,11 +31,14 @@ Oefentoetsen per vak en hoofdstuk voor het secundair onderwijs. Iedereen kan zon
 - Via **+ Hoofdstuk toevoegen** stuurt een ingelogde gebruiker de cursus in: vak, jaar, hoofdstuk, optioneel titel en opmerking, plus de leerstof als PDF, foto's of tekst (samen max. 30 MB, max. 20 bestanden). Foto's worden in de browser verkleind.
 - De bestanden gaan via de server naar de bestandsopslag van Claude en blijven daar bewaard tot de beheerder het voorstel verwijdert. Uploads waarvoor nooit een voorstel verstuurd werd, worden na een dag opgeruimd.
 - Naam en e-mail van de indiener komen van het account.
-- Op de pagina's voor bezoekers (startpagina, toets, voorstelformulier, foutmeldingen bij het insturen) wordt Claude nergens vermeld. Alleen de beheerpagina noemt de diensten die erachter zitten.
+- Op de pagina's voor bezoekers (startpagina, toets, verbetering bij zelf antwoorden, voorstelformulier, foutmeldingen bij het insturen) wordt Claude nergens vermeld. Alleen de beheerpagina noemt de diensten die erachter zitten.
 
 **Beheer (alleen admin, met wachtwoord)**
 - Via het linkje **Beheer** onderaan de startpagina.
-- **Voorstellen**: per voorstel *Vragen laten maken*. Claude (Opus 5.5) leest de cursus en bepaalt zelf hoeveel vragen nodig zijn om de leerstof te dekken (minstens 60, zodat er minstens drie verschillende toetsen mogelijk zijn). Dat duurt enkele minuten; de kostprijs wordt getoond.
+- **Voorstellen**: per voorstel *Vragen laten maken*. Claude (Opus 5.5) leest de cursus en bepaalt zelf hoeveel vragen nodig zijn om de leerstof te dekken (minstens 60, zodat er minstens drie verschillende toetsen mogelijk zijn).
+  - Dat gebeurt als **batch-opdracht** bij Claude: meestal klaar binnen enkele minuten tot een uur (maximaal 24 uur), aan de halve prijs. Het tabblad mag dicht; de status (*Claude maakt de vragen…*, gestart om …) staat bij het voorstel en de pagina kijkt om de 20 seconden of het klaar is.
+  - Is het klaar, dan verschijnt **Resultaat nakijken**. Het resultaat blijft op de server bewaard tot je opnieuw vragen laat maken of het voorstel verwijdert; de kostprijs wordt getoond.
+  - Waarom een batch: het gratis plan van Cloudflare laat de server maar enkele milliseconden rekentijd per aanvraag toe. Het antwoord van Claude live doorsturen (zoals vroeger) overschreed dat en brak af met *De verbinding met de server werd onderbroken*.
 - **Nakijken**: vragen schrappen, vak/jaar/hoofdstuk/titel aanpassen, eerst zelf uitproberen of als JSON downloaden.
 - **Online zetten**: de server commit `data/<id>.json` en werkt `data/catalog.json` bij in deze repo. GitHub Pages publiceert het na ongeveer een minuut. Het voorstel blijft bewaard (gemarkeerd als *online gezet*), zodat je later opnieuw vragen kan laten maken.
 - **Hoofdstukken**: bewerken, verwijderen, of een kant-en-klaar JSON-bestand laden.
@@ -56,11 +63,11 @@ favicon.svg, apple-touch-icon.png
 worker/               de server (Cloudflare Worker), zie worker/README.md
 ```
 
-De website is statisch (GitHub Pages). De server is een kleine Cloudflare Worker die de geheime sleutels bewaart, zodat ze nooit in de browser van een bezoeker terechtkomen, en die de accounts, resultaten en klassen bijhoudt in een Cloudflare D1-database. Zonder server werken de toetsen gewoon (zonder login); alleen accounts, voorstellen en beheer hebben hem nodig.
+De website is statisch (GitHub Pages). De server is een kleine Cloudflare Worker die de geheime sleutels bewaart, zodat ze nooit in de browser van een bezoeker terechtkomen, en die de accounts, resultaten en klassen bijhoudt in een Cloudflare D1-database. Zonder server werken de meerkeuzetoetsen gewoon (zonder login); accounts, zelf antwoorden, voorstellen en beheer hebben hem nodig.
 
 ### Hoofdstukformaat
 
-Het eerste antwoord in `a` is altijd het juiste; de toets schudt de volgorde. 2 tot 6 antwoorden per vraag. `o` is de index van het onderdeel.
+Het eerste antwoord in `a` is altijd het juiste; de toets schudt de volgorde. 2 tot 6 antwoorden per vraag. `o` is de index van het onderdeel. `"k": 1` betekent dat de vraag alleen met de keuzes erbij te beantwoorden is; die vraag toont ook bij *zelf antwoorden* haar keuzes. Nieuwe hoofdstukken krijgen dat veld bij het maken van de vragen; bij oudere hoofdstukken herkent de site zulke vragen aan de vraagtekst (`needsChoices` in `js/util.js`) en aan vragen met maar twee antwoorden.
 
 ```json
 {
@@ -89,5 +96,6 @@ Lokaal testen: `python3 -m http.server 8765` en open http://localhost:8765. Rech
 - Externe logins gebruiken OAuth2 met `state` (en PKCE bij Google en Microsoft). De site krijgt nooit een wachtwoord van een leerling. Een leerlingensessie blijft 30 dagen geldig en is ondertekend met een geheime sleutel die de server zelf aanmaakt.
 - Een leerkracht ziet enkel leerlingen die met de klascode zelf lid werden, en enkel hun toetsen van na dat moment.
 - Het admin-wachtwoord staat als geheim op de server. Na 10 foute pogingen per uur wordt een IP-adres tijdelijk geblokkeerd. Een sessie blijft 7 dagen geldig; een nieuw wachtwoord maakt alle sessies ongeldig.
+- Zelf antwoorden: de server zoekt de vraag en het juiste antwoord zelf op in de repo (de browser stuurt enkel hoofdstuk, vraagnummer en antwoord), zodat de verbetering niet als gratis chatdienst te misbruiken is. Max. 400 verbeteringen per uur per IP-adres (een klas deelt vaak één adres) en 5 000 per dag in totaal. Wat een leerling typt, wordt behandeld als antwoord, nooit als opdracht.
 - Tegen misbruik: per gebruiker max. 30 uploads en 5 voorstellen per uur, en samen max. 50 voorstellen per dag. Claude maakt alleen vragen als de beheerder erop klikt, dus voorstellen kosten op zich niets.
 - Het GitHub-token geef je best enkel toegang tot deze repo, met *Contents: Read and write*.

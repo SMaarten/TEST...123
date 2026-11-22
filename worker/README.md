@@ -48,12 +48,14 @@ Iedereen die inlogt, is eerst *leerling*. Leerkrachten geef je de rol *leerkrach
 - **Websites die de server mogen gebruiken**: `ALLOWED_ORIGINS` in `wrangler.toml`. Komt de site op een ander adres, voeg het toe en voer `npx wrangler deploy` opnieuw uit.
 - **Admin-wachtwoord wijzigen**: `npx wrangler secret put ADMIN_PASSWORD`. Alle bestaande sessies worden ongeldig.
 - **Opdracht voor Claude** (hoe de vragen gemaakt worden): `src/prompt.js`, daarna `npx wrangler deploy`.
+- **Verbeteren bij zelf antwoorden**: opdracht en model (`GRADE_MODEL`, standaard Claude Haiku 5.5 met effort `low`) staan onderaan `src/prompt.js`; de limieten (400 per uur per IP, 5 000 per dag) in `grade()` in `src/index.js`.
 
 ## Opslag
 
 | Waar | Wat |
 |---|---|
-| Cloudflare KV | instellingen (sleutels, repo, branch, logins), voorstellen, lopende logins, tellers tegen misbruik |
+| Worker-geheugen | hoofdstukken uit de repo, 10 minuten bewaard om antwoorden te verbeteren |
+| Cloudflare KV | instellingen (sleutels, repo, branch, logins), voorstellen (met de lopende batch-opdracht), de gemaakte vragenbank per voorstel (`resultaat:<id>`), lopende logins, tellers tegen misbruik |
 | Cloudflare D1 | gebruikers, wachtwoord-hashes, resultaten, al gekregen vragen, klassen en leden (`schema.sql`) |
 | Claude Files API | de ingestuurde cursusbestanden, zonder vervaldatum; verwijderd als de beheerder het voorstel verwijdert |
 | GitHub-repo | de online gezette hoofdstukken (`data/`) |
@@ -62,9 +64,12 @@ Iedereen die inlogt, is eerst *leerling*. Leerkrachten geef je de rol *leerkrach
 
 - Cloudflare Workers, KV en D1: het gratis plan volstaat voor normaal gebruik.
 - Google-, Microsoft- en Smartschool-logins zijn gratis.
-- Claude: enkel wanneer de beheerder op *Vragen laten maken* klikt, betaald via de API-sleutel. Bestanden uploaden en verwijderen bij Claude is gratis.
+- Claude, betaald via de API-sleutel:
+  - *Vragen laten maken*: via de Batch API, aan de helft van de gewone prijs (Opus 5.5).
+  - *Zelf antwoorden*: elk verbeterd antwoord, met Haiku 5.5 een fractie van een cent (ruwweg $0,005 voor een volledige toets van 20 vragen).
+  - Bestanden uploaden en verwijderen bij Claude is gratis.
 
-Op het gratis plan van Cloudflare is de rekentijd per aanvraag beperkt. Mislukt het uploaden van een groot bestand, splits het dan in kleinere PDF's (of neem het betaalde Workers-plan van $5 per maand).
+Op het gratis plan van Cloudflare is de rekentijd per aanvraag beperkt (enkele milliseconden). Daarom loopt *Vragen laten maken* als batch: de server dient de opdracht in en haalt later het resultaat op, zonder zelf minutenlang te moeten verwerken. Mislukt het uploaden van een groot bestand, splits het dan in kleinere PDF's (of neem het betaalde Workers-plan van $5 per maand).
 
 ## Lokaal testen
 

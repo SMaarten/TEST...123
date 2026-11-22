@@ -1,20 +1,21 @@
 // TEST...123 API (Cloudflare Worker)
 //
 // Bewaart de geheime sleutels (Claude, GitHub, logins) zodat ze nooit in de browser van een bezoeker komen.
-//  - iedereen:      toetsen maken (dat gebeurt volledig op de website, zonder deze server)
+//  - iedereen:      toetsen maken (op de website zelf); bij "zelf antwoorden" verbetert deze server elk antwoord
 //  - ingelogd:      historiek op elk toestel, lid worden van een klas, een hoofdstuk voorstellen
 //  - leerkracht:    klassen maken en de resultaten van de leerlingen in die klassen bekijken
 //  - admin (wachtwoord): voorstellen behandelen, online zetten, gebruikers en sleutels beheren
 //
 // Opslag:  KV  config            sleutels, repo, branch, logins
-//              voorstel:<id>     een ingediend voorstel
+//              voorstel:<id>     een ingediend voorstel (met .taak als er vragen gemaakt worden)
+//              resultaat:<id>    de vragenbank die Claude voor dat voorstel maakte, tot ze opnieuw gemaakt wordt
 //              upload:<fileId>   geüpload maar nog niet aan een voorstel gekoppeld (na 1 dag opgeruimd)
 //              oauth:<state>     lopende login (10 minuten)
 //              sessiesleutel     geheime sleutel voor leerlingensessies
 //              rl:<...>          tellers tegen misbruik
 //          D1  gebruikers, resultaten, gezien, klassen, leden (zie schema.sql)
 import Anthropic, { toFile } from "@anthropic-ai/sdk";
-import { MODEL, SYSTEM, SCHEMA, taskText } from "./prompt.js";
+import { MODEL, SYSTEM, SCHEMA, taskText, GRADE_MODEL, GRADE_SYSTEM, GRADE_SCHEMA, gradeText } from "./prompt.js";
 import { validateChapter, serializeChapter, catalogEntry, sortCatalog } from "../../js/util.js";
 import { Fout, json, ip, rateLimit, getConfig, enc, mask, clean, newId, allowedOrigins, hmacKey, signToken, verifyToken, bearer } from "./common.js";
 import * as auth from "./auth.js";
@@ -87,6 +88,59 @@ async function upload(req, env, u) {
   const info = { id: meta.id, naam, grootte: buf.byteLength, type, ts: Date.now(), door: u.id };
   await env.KV.put(`upload:${meta.id}`, JSON.stringify(info));
   return json({ id: info.id, naam, grootte: info.grootte }, 201);
+}
+
+/* ---------- Open antwoorden verbeteren ---------- */
+
+// Hoofdstukken uit de repo, kort bewaard in het geheugen van de Worker.
+const chapterCache = new Map();
+const CHAPTER_TTL = 10 * 60 * 1000;
+
+async function loadChapter(env, cfg, id) {
+  const hit = chapterCache.get(id);
+  if (hit && Date.now() - hit.ts < CHAPTER_TTL) return hit.ch;
+  const f = await getFile(env, cfg, `data/${id}.json`);
+  if (!f) return null;
+  const ch = JSON.parse(f.text);
+  chapterCache.set(id, { ch, ts: Date.now() });
+  return ch;
+}
+
+async function grade(req, env) {
+  // iedereen mag dit gebruiken (ook zonder login); een klas deelt vaak één IP-adres
+  await rateLimit(env, "verbeter", ip(req), 400, 3600);
+  await rateLimit(env, "verbeter-dag", "alle", 5000, 24 * 3600);
+  const b = await req.json().catch(() => ({}));
+  const id = String(b.hoofdstuk || ""), idx = Number(b.index);
+  const antwoord = String(b.antwoord || "").trim().slice(0, 500);
+  if (!/^[a-z0-9-]+$/.test(id) || !Number.isInteger(idx)) throw new Fout(400, "Ongeldige vraag.");
+  if (!antwoord) throw new Fout(400, "Typ eerst een antwoord.");
+
+  const cfg = await getConfig(env);
+  if (!cfg.anthropicKey) throw new Fout(503, "Zelf antwoorden is nu niet beschikbaar. Kies meerkeuze.");
+  const ch = await loadChapter(env, cfg, id);
+  if (!ch) throw new Fout(404, "Zelf antwoorden kan pas als dit hoofdstuk online staat.");
+  // de index kan verschoven zijn als het hoofdstuk ondertussen aangepast werd: zoek dan op vraagtekst
+  let q = ch.vragen[idx];
+  if (!q || (b.vraag && q.v !== b.vraag)) q = ch.vragen.find(x => x.v === b.vraag);
+  if (!q) throw new Fout(409, "Deze vraag bestaat niet meer. Start een nieuwe toets.");
+
+  // Haiku kent geen automatische overstap naar een ander model bij een weigering; die vangen we hieronder op
+  let msg;
+  try {
+    msg = await claude(env, cfg).messages.create({
+      model: GRADE_MODEL,
+      max_tokens: 4000,
+      output_config: { effort: "low", format: { type: "json_schema", schema: GRADE_SCHEMA } },
+      system: GRADE_SYSTEM,
+      messages: [{ role: "user", content: gradeText(ch, q, antwoord) }]
+    });
+  } catch (e) { console.error(e); throw new Fout(503, "Verbeteren lukt nu even niet. Probeer opnieuw."); }
+  if (msg.stop_reason === "refusal" || msg.stop_reason === "max_tokens") throw new Fout(503, "Dit antwoord kon niet verbeterd worden. Probeer het anders te formuleren.");
+  const tekst = msg.content.filter(blk => blk.type === "text").map(blk => blk.text).join("");
+  let out;
+  try { out = JSON.parse(tekst); } catch { throw new Fout(503, "Verbeteren lukt nu even niet. Probeer opnieuw."); }
+  return json({ juist: !!out.juist, feedback: String(out.feedback || "").slice(0, 600) });
 }
 
 async function propose(req, env, u) {
@@ -166,11 +220,16 @@ async function deleteProposal(env, id) {
     const c = claude(env, cfg);
     await Promise.all(v.bestanden.map(f => c.files.delete(f.id).catch(() => {})));
   }
+  if (cfg.anthropicKey && v.taak?.batch && !v.taak.klaar) claude(env, cfg).messages.batches.cancel(v.taak.batch).catch(() => {});
+  await env.KV.delete(`resultaat:${id}`);
   await env.KV.delete(`voorstel:${id}`);
 }
 
-// Streamt voortgang als JSON-regels: {type:"bezig", vragen} … {type:"klaar", tekst, stop_reason, usage}
-async function generate(env, id, ctx) {
+// Vragen maken loopt als batch bij Claude: de server dient de opdracht in en kijkt later of ze klaar is.
+// Zo hoeft er geen verbinding open te blijven en blijft de rekentijd van de Worker heel klein
+// (het gratis Cloudflare-plan laat maar enkele milliseconden per aanvraag toe). Een batch kost ook de helft.
+// KV: voorstel:<id>.taak = { batch, gestart, klaar? }   resultaat:<id> = { tekst, stop_reason, usage }
+async function generate(env, id) {
   const v = await getProposal(env, id);
   const cfg = await getConfig(env);
   const client = claude(env, cfg);
@@ -178,56 +237,55 @@ async function generate(env, id, ctx) {
     ? { type: "image", source: { type: "file", file_id: f.id } }
     : { type: "document", source: { type: "file", file_id: f.id }, title: f.naam });
   content.push({ type: "text", text: taskText(v) });
-
-  const params = {
-    model: MODEL,
-    max_tokens: 64000,
-    output_config: { effort: "high", format: { type: "json_schema", schema: SCHEMA } },
-    system: SYSTEM,
-    messages: [{ role: "user", content }],
-    // bij een weigering door de veiligheidsfilter probeert de API zelf een ander model
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default"
-  };
-
-  const { readable, writable } = new TransformStream();
-  const w = writable.getWriter();
-  const send = o => w.write(enc.encode(JSON.stringify(o) + "\n")).catch(() => {});
-
-  ctx.waitUntil((async () => {
-    let text = "";
-    const beat = setInterval(() => send({ type: "bezig", vragen: (text.match(/"vraag"\s*:/g) || []).length }), 2000);
-    const run = async p => {
-      text = "";
-      const stream = client.beta.messages.stream(p);
-      stream.on("text", d => { text += d; });
-      return stream.finalMessage();
-    };
-    try {
-      let msg;
-      try { msg = await run(params); }
-      catch (e) {
-        // als de fallback-optie (nog) niet aanvaard wordt: opnieuw zonder
-        if (e?.status === 400 && /fallback|beta/i.test(e.message || "")) {
-          const { betas, fallbacks, ...rest } = params;
-          msg = await run(rest);
-        } else throw e;
+  // een batch kent geen automatische overstap naar een ander model (fallbacks)
+  const batch = await client.messages.batches.create({
+    requests: [{
+      custom_id: v.id,
+      params: {
+        model: MODEL,
+        max_tokens: 64000,
+        output_config: { effort: "high", format: { type: "json_schema", schema: SCHEMA } },
+        system: SYSTEM,
+        messages: [{ role: "user", content }]
       }
-      // enkel de tekst na een eventuele overstap naar een ander model telt
-      let start = 0;
-      msg.content.forEach((b, i) => { if (b.type === "fallback") start = i + 1; });
-      const tekst = msg.content.slice(start).filter(b => b.type === "text").map(b => b.text).join("");
-      await send({ type: "klaar", tekst, stop_reason: msg.stop_reason, usage: msg.usage });
-    } catch (e) {
-      console.error(e);
-      await send({ type: "fout", status: e?.status || 500, melding: claudeError(e) });
-    } finally {
-      clearInterval(beat);
-      await w.close().catch(() => {});
-    }
-  })());
+    }]
+  });
+  // een vorige, nog lopende opdracht voor dit voorstel stoppen
+  if (v.taak?.batch && !v.taak.klaar) client.messages.batches.cancel(v.taak.batch).catch(() => {});
+  await env.KV.delete(`resultaat:${id}`);
+  const taak = { batch: batch.id, gestart: Date.now() };
+  await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...v, taak }));
+  return { status: "bezig", gestart: taak.gestart };
+}
 
-  return new Response(readable, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" } });
+async function generateStatus(env, id) {
+  const v = await getProposal(env, id);
+  if (!v.taak) throw new Fout(404, "Voor dit voorstel worden geen vragen gemaakt.");
+  const saved = await env.KV.get(`resultaat:${id}`, "json");
+  if (saved) return { status: "klaar", gestart: v.taak.gestart, klaar: v.taak.klaar, ...saved };
+  const cfg = await getConfig(env);
+  const client = claude(env, cfg);
+  const batch = await client.messages.batches.retrieve(v.taak.batch);
+  if (batch.processing_status !== "ended") return { status: "bezig", gestart: v.taak.gestart };
+  let result = null;
+  for await (const r of await client.messages.batches.results(v.taak.batch)) { if (r.custom_id === v.id) result = r.result; }
+  if (!result || result.type !== "succeeded") {
+    const melding = !result ? "Er kwam geen resultaat terug. Probeer opnieuw."
+      : result.type === "expired" ? "De opdracht duurde te lang en is vervallen. Probeer opnieuw."
+      : result.type === "canceled" ? "De opdracht werd geannuleerd."
+      : "Claude kon de vragen niet maken: " + (result.error?.error?.message || result.error?.type || "onbekende fout") + ".";
+    await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...v, taak: null }));
+    return { status: "fout", melding };
+  }
+  const msg = result.message;
+  const out = {
+    tekst: msg.content.filter(b => b.type === "text").map(b => b.text).join(""),
+    stop_reason: msg.stop_reason, usage: msg.usage, batch: true
+  };
+  const klaar = Date.now();
+  await env.KV.put(`resultaat:${id}`, JSON.stringify(out));
+  await env.KV.put(`voorstel:${id}`, JSON.stringify({ ...v, taak: { ...v.taak, klaar } }));
+  return { status: "klaar", gestart: v.taak.gestart, klaar, ...out };
 }
 
 function claudeError(e) {
@@ -362,7 +420,7 @@ async function publish(req, env) {
   const clean = {
     id: ch.id, vak: ch.vak, graad: ch.graad || "", nr: ch.nr || "", titel: ch.titel, beschrijving: ch.beschrijving || "",
     onderdelen: ch.onderdelen.map(o => ({ nr: String(o.nr || ""), titel: String(o.titel || "") })),
-    vragen: ch.vragen.map(q => ({ o: q.o, v: q.v, a: q.a.map(String), u: q.u || "" }))
+    vragen: ch.vragen.map(q => ({ o: q.o, v: q.v, a: q.a.map(String), u: q.u || "", ...(q.k ? { k: 1 } : {}) }))
   };
   const cfg = await getConfig(env);
   const path = `data/${clean.id}.json`;
@@ -399,11 +457,12 @@ async function handle(req, env, ctx) {
   // ---- iedereen ----
   if (m === "GET" && p === "/status") {
     const c = await getConfig(env);
-    return json({ ok: true, voorstellen: !!c.anthropicKey, logins: auth.enabledProviders(c), eigenAccount: true });
+    return json({ ok: true, voorstellen: !!c.anthropicKey, verbeteren: !!c.anthropicKey, logins: auth.enabledProviders(c), eigenAccount: true });
   }
   if (m === "POST" && p === "/registreer") return json(await lokaal.register(req, env), 201);
   if (m === "POST" && p === "/aanmelden") return json(await lokaal.login(req, env));
   if (m === "POST" && p === "/login") return adminLogin(req, env);
+  if (m === "POST" && p === "/verbeter") return grade(req, env);
   if ((r = p.match(/^\/auth\/(\w+)\/start$/)) && m === "GET") return auth.start(req, env, r[1]);
   if ((r = p.match(/^\/auth\/(\w+)\/callback$/)) && m === "GET") return auth.callback(req, env, r[1]);
 
@@ -436,7 +495,8 @@ async function handle(req, env, ctx) {
   if (m === "GET" && ap === "/sessie") return json({ ok: true });
   if (m === "GET" && ap === "/voorstellen") return json(await listProposals(env, ctx));
   if ((r = ap.match(/^\/voorstellen\/([\w-]+)$/)) && m === "DELETE") { await deleteProposal(env, r[1]); return json({ ok: true }); }
-  if ((r = ap.match(/^\/voorstellen\/([\w-]+)\/genereer$/)) && m === "POST") return generate(env, r[1], ctx);
+  if ((r = ap.match(/^\/voorstellen\/([\w-]+)\/genereer$/)) && m === "POST") return json(await generate(env, r[1]));
+  if ((r = ap.match(/^\/voorstellen\/([\w-]+)\/genereer$/)) && m === "GET") return json(await generateStatus(env, r[1]));
   if (m === "GET" && ap === "/instellingen") return json(await showSettings(req, env));
   if (m === "PUT" && ap === "/instellingen") return json(await saveSettings(req, env));
   if (m === "POST" && ap === "/instellingen/test") return json(await testSettings(env));

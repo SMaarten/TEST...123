@@ -9,11 +9,14 @@ import { api, apiUrl, session, setSession, logout, ApiFout } from "./api.js";
 
 const LS_DRAFT = "gebuisd.draft";
 
-let root, draft = null, generating = null;
+let root, draft = null;
+let pollTimer = null;   // kijkt regelmatig of lopende opdrachten klaar zijn
+const POLL_MS = 20000;
 
 const $ = id => root.querySelector("#" + id);
 const kb = n => n > 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " MB" : Math.max(1, Math.round(n / 1024)) + " kB";
 const datum = ts => new Date(ts).toLocaleDateString("nl-BE", { day: "numeric", month: "short", year: "numeric" });
+const tijdstip = ts => new Date(ts).toLocaleString("nl-BE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 
 function status(id, text, kind) {
   const el = $(id);
@@ -101,7 +104,8 @@ async function renderProposals() {
           <p><b>${esc(v.vak)}</b> · ${esc([v.graad, "hoofdstuk " + v.nr].filter(Boolean).join(" · "))}${v.titel ? " · " + esc(v.titel) : ""}
             ${v.online ? `<span class="tag">online gezet</span>` : ""}</p>
           <span class="row">
-            <button class="btn small primary" type="button" data-gen="${esc(v.id)}">${v.online ? "Opnieuw vragen maken" : "Vragen laten maken"}</button>
+            ${v.taak?.klaar ? `<button class="btn small primary" type="button" data-res="${esc(v.id)}">Resultaat nakijken</button>` : ""}
+            <button class="btn small${v.taak?.klaar ? "" : " primary"}" type="button" data-gen="${esc(v.id)}" ${v.taak && !v.taak.klaar ? "disabled" : ""}>${v.online || v.taak?.klaar ? "Opnieuw vragen maken" : "Vragen laten maken"}</button>
             <button class="btn small danger" type="button" data-delv="${esc(v.id)}">Verwijderen</button>
           </span>
         </div>
@@ -111,10 +115,45 @@ async function renderProposals() {
         <p class="status" id="g-${esc(v.id)}" role="status" aria-live="polite"></p>
       </div>`).join("")}`;
   box.onclick = e => {
-    const g = e.target.dataset.gen, d = e.target.dataset.delv;
+    const g = e.target.dataset.gen, d = e.target.dataset.delv, r = e.target.dataset.res;
     if (g) generate(list.find(v => v.id === g), e.target);
+    if (r) loadResult(list.find(v => v.id === r), e.target);
     if (d) deleteProposal(d, e.target);
   };
+  for (const v of list) {
+    if (v.taak && !v.taak.klaar) showRunning(v);
+    else if (v.taak?.klaar) status("g-" + v.id, `De vragen zijn klaar sinds ${tijdstip(v.taak.klaar)}. Klik op <b>Resultaat nakijken</b>.`, "ok");
+  }
+  schedulePoll(list);
+}
+
+function showRunning(v) {
+  const m = Math.max(0, Math.round((Date.now() - v.taak.gestart) / 60000));
+  status("g-" + v.id, `<span class="spin"></span>Claude maakt de vragen… <span class="muted">(gestart ${tijdstip(v.taak.gestart)}${m ? `, ${m} min geleden` : ""})</span>
+<small class="muted">Meestal klaar binnen enkele minuten tot een uur. Je mag dit tabblad sluiten: het resultaat wacht hier tot je terugkomt.</small>`);
+}
+
+// Zolang er opdrachten lopen: om de 20 seconden vragen of ze klaar zijn.
+function schedulePoll(list) {
+  clearTimeout(pollTimer);
+  const running = list.filter(v => v.taak && !v.taak.klaar);
+  if (!running.length) return;
+  pollTimer = setTimeout(async () => {
+    if (!$("proposals")) return;   // beheerpagina verlaten
+    let changed = false;
+    for (const v of running) {
+      try {
+        const r = await api(`/admin/voorstellen/${v.id}/genereer`, { admin: true });
+        if (r.status === "bezig") showRunning(v);
+        else changed = true;
+      } catch (e) {
+        if (e.status === 401) return renderAdmin(root);
+        console.error(e);   // even geen verbinding: volgende keer opnieuw
+      }
+    }
+    if (changed) await renderProposals();
+    else schedulePoll(list);
+  }, POLL_MS);
 }
 
 async function deleteProposal(id, btn) {
@@ -125,40 +164,28 @@ async function deleteProposal(id, btn) {
 }
 
 async function generate(v, btn) {
-  if (generating) return status("g-" + v.id, "Er wordt al een vragenbank gemaakt. Wacht tot die klaar is.", "err");
-  if (draft && !confirm("Er staat nog een niet-opgeslagen vragenbank klaar om na te kijken. Die wordt vervangen. Doorgaan?")) return;
-  generating = v.id;
-  root.querySelectorAll("[data-gen]").forEach(b => { b.disabled = true; });
   const sid = "g-" + v.id;
-  const t0 = Date.now();
-  let n = 0;
-  const show = () => {
-    const s = Math.round((Date.now() - t0) / 1000);
-    status(sid, `<span class="spin"></span>${n ? `Claude schrijft vragen… ${n} klaar` : "Claude leest de cursus en plant de vragen…"} <span class="muted">(${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")})</span>\n<small class="muted">Dit duurt enkele minuten. Laat dit tabblad open.</small>`);
-  };
-  show();
-  const timer = setInterval(show, 1000);
+  if (v.taak?.klaar && !confirm("Er staat al een vragenbank klaar voor dit voorstel. Die wordt vervangen door een nieuwe. Doorgaan?")) return;
+  btn.disabled = true;
+  status(sid, `<span class="spin"></span>Opdracht indienen…`);
   try {
-    const res = await api(`/admin/voorstellen/${v.id}/genereer`, { method: "POST", admin: true, raw: true });
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "", done = null;
-    for (;;) {
-      const { value, done: end } = await reader.read();
-      if (value) buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n")) >= 0) {
-        const line = buf.slice(0, i).trim();
-        buf = buf.slice(i + 1);
-        if (!line) continue;
-        const ev = JSON.parse(line);
-        if (ev.type === "bezig") n = ev.vragen;
-        if (ev.type === "fout") throw new Error(ev.melding);
-        if (ev.type === "klaar") done = ev;
-      }
-      if (end) break;
-    }
-    if (!done) throw new Error("De verbinding met de server werd onderbroken. Probeer opnieuw.");
+    await api(`/admin/voorstellen/${v.id}/genereer`, { method: "POST", admin: true });
+    await renderProposals();
+  } catch (e) {
+    btn.disabled = false;
+    handle(e, sid);
+  }
+}
+
+async function loadResult(v, btn) {
+  const sid = "g-" + v.id;
+  if (draft && !confirm("Er staat nog een niet-opgeslagen vragenbank klaar om na te kijken. Die wordt vervangen. Doorgaan?")) return;
+  btn.disabled = true;
+  status(sid, `<span class="spin"></span>Resultaat ophalen…`);
+  try {
+    const done = await api(`/admin/voorstellen/${v.id}/genereer`, { admin: true });
+    if (done.status === "fout") throw new Error(done.melding);
+    if (done.status !== "klaar") throw new Error("De vragen zijn nog niet klaar.");
     if (done.stop_reason === "refusal") throw new Error("Claude weigerde dit materiaal te verwerken. Controleer of de bestanden enkel leerstof bevatten.");
     if (done.stop_reason === "max_tokens") throw new Error("Het antwoord werd te lang en is afgebroken. Splits het hoofdstuk in twee voorstellen.");
     let out;
@@ -168,7 +195,8 @@ async function generate(v, btn) {
     if (errs.length) throw new Error("De vragenbank heeft fouten:\n" + errs.join("\n"));
     lsSet(LS_DRAFT, draft);
     const u = done.usage || {};
-    const cost = ((u.input_tokens || 0) * 4 + (u.output_tokens || 0) * 20) / 1e6;
+    // batchprijs: de helft van $4 / $20 per miljoen tokens
+    const cost = ((u.input_tokens || 0) * 4 + (u.output_tokens || 0) * 20) / 1e6 / (done.batch ? 2 : 1);
     status(sid, `Klaar: ${draft.vragen.length} vragen in ${draft.onderdelen.length} onderdelen. <span class="muted">Kostprijs ongeveer $${cost.toFixed(2)}.</span> Kijk ze hieronder na.`, "ok");
     renderReview();
     $("review").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -176,9 +204,7 @@ async function generate(v, btn) {
     console.error(e);
     handle(e, sid);
   } finally {
-    clearInterval(timer);
-    generating = null;
-    root.querySelectorAll("[data-gen]").forEach(b => { b.disabled = false; });
+    btn.disabled = false;
   }
 }
 
@@ -192,7 +218,7 @@ function toChapter(out, v) {
     for (const q of qs) {
       const a = [q.juist, ...q.fout.slice(0, 5)].map(x => String(x).trim());
       if (new Set(a).size !== a.length) continue; // dubbele antwoorden: vraag overslaan
-      vragen.push({ o: idx, v: q.vraag.trim(), a, u: (q.uitleg || "").trim() });
+      vragen.push({ o: idx, v: q.vraag.trim(), a, u: (q.uitleg || "").trim(), ...(q.keuze ? { k: 1 } : {}) });
     }
   }
   return {
