@@ -28,6 +28,15 @@
       "bestand": "data/mens-en-samenleving-1-h2.json"
     },
     {
+      "id": "natuurwetenschappen-1-h2",
+      "vak": "Natuurwetenschappen",
+      "graad": "1ste jaar",
+      "nr": "2",
+      "titel": "Ecologie",
+      "vragen": 132,
+      "bestand": "data/natuurwetenschappen-1-h2.json"
+    },
+    {
       "id": "wiskunde-1-h3",
       "vak": "Wiskunde",
       "graad": "1ste jaar",
