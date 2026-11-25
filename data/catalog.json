@@ -53,6 +53,15 @@
       "titel": "Bewerkingen met positieve getallen",
       "vragen": 203,
       "bestand": "data/wiskunde-1-h3.json"
+    },
+    {
+      "id": "wiskunde-1-h4",
+      "vak": "Wiskunde",
+      "graad": "1ste jaar",
+      "nr": "4",
+      "titel": "H4",
+      "vragen": 114,
+      "bestand": "data/wiskunde-1-h4.json"
     }
   ]
 }
