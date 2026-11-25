@@ -10,6 +10,15 @@
       "bestand": "data/frans-1-h3.json"
     },
     {
+      "id": "geschiedenis-1-h2",
+      "vak": "Geschiedenis",
+      "graad": "1ste jaar",
+      "nr": "2",
+      "titel": "Prehistorie",
+      "vragen": 98,
+      "bestand": "data/geschiedenis-1-h2.json"
+    },
+    {
       "id": "latijn-1-h",
       "vak": "Latijn",
       "graad": "1ste jaar",
