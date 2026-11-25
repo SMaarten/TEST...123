@@ -1,6 +1,15 @@
 {
   "hoofdstukken": [
     {
+      "id": "frans-1-h3",
+      "vak": "Frans",
+      "graad": "1ste jaar",
+      "nr": "3",
+      "titel": "ER3",
+      "vragen": 103,
+      "bestand": "data/frans-1-h3.json"
+    },
+    {
       "id": "latijn-1-h",
       "vak": "Latijn",
       "graad": "1ste jaar",
